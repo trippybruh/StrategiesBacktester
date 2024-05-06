@@ -1,4 +1,3 @@
-#do this bruh U got this, anyway.. godspeed!#
 #AUTHOR: TrippyBruh#
 import talib, random, statistics, numpy
 from progressbar import ProgressBar
