@@ -167,39 +167,6 @@ class BacktestLeveragedTrade(BacktestTrade):
     
     def __str__(self):
         return super().__str__() + f"\nLeverage: {self.leverage}X, Liquidation price: {std_4rounding(self.liqPrice)} $"
-        
-class BacktestPortfolio():
-    
-    assets = ["USD", "BTC", "ETH", "ADA"]
-
-    portfolio1 = {"USD" : 0.5,
-                  "BTC" : 0.3,
-                  "ETH" : 0.2,
-                  "ADA" : 0.1
-                }
-    portfolio2 = {"USD" : 0.25,
-                  "BTC" : 0.4,
-                  "ETH" : 0.25,
-                  "ADA" : 0.1
-                }
-    portfolio3 = {"USD" : 0.2,
-                  "BTC" : 0.5,
-                  "ETH" : 0.25,
-                  "ADA" : 0.05
-                }
-    portfolio4 = {"USD" : 0.5,
-                "BTC" : 0.5,
-                "ETH" : 0.0,
-                "ADA" : 0.0
-                }
-
-    def __init__(self, allocatedAssets = dict):
-        self.portfolio = {}.fromkeys(self.assets)
-        self.portfolio = allocatedAssets.copy()
-        allocation = 0
-        for allocationValue in self.portfolio.items():
-            allocation += allocationValue
-        if allocation != 1: raise AttributeError("Total allocation factors must add up to exactly 1")
 
 #LOADING AND RUNNING   
 class BackTestLoader():
