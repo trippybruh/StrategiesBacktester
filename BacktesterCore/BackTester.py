@@ -1,9 +1,11 @@
 # AUTHOR: TrippyBruh#
-import talib, random, statistics, numpy
-from progressbar import ProgressBar
 from typing import List, Final
+import random
+import statistics
+import talib
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
+from progressbar import ProgressBar
 from .BackTesterHelpers import *
 
 
@@ -89,7 +91,7 @@ class BacktestHeikenCandle(BacktestCandle):
 
 class BacktestTrade:
 
-    def __init__(self, timestampEntry, isBuy, entryPrice, qty):
+    def __init__(self, timestampEntry: int, isBuy: bool, entryPrice: float, qty: float):
         self.ID = id(self)
         self.timestampEntry = timestampEntry
         self.timestampExit = 0
@@ -285,13 +287,13 @@ class BacktestTrendStrategy:
 
 class BacktestDataset:
     timeframes = {"1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "6h": 21600000,
-                  "1D": 86400000}  #milliseconds
+                  "1D": 86400000}  # milliseconds
     markets = ["BTCUSDT", "ETHBTC", "ETHUSDT"]
 
     def __init__(self):
         self.market = None
         self.timeframe = None
-        self.candles: List[BacktestCandle] = []
+        self.candles = []
         self.heikenAshiCandles = []
         self.renkoCandles = []
         self.additionalCandles = {}.fromkeys(self.timeframes.keys())
@@ -540,7 +542,7 @@ class BacktestDataset:
 
 class BackTestRunner:
 
-    def __init__(self, loadedDataset=BacktestDataset, timeframe=str, market=str, **kwargs):
+    def __init__(self, loadedDataset: BacktestDataset, timeframe: str, market: str, **kwargs):
         def validPreset():
             try:
                 return kwargs.get("initialUSD") >= 10 and 0 <= kwargs.get("startingAllocation") <= 1 and kwargs.get(
@@ -588,8 +590,8 @@ class BackTestRunner:
 class BacktestBot:
     plotDictKeys = ["buyNholdUSD", "runningBotUSD", "buyNholdPNL", "runningPNL", "runningEff", "bullBias", "bearBias"]
 
-    def __init__(self, dataset=BacktestDataset, initialUSD=int, tradesSizeUSD=int, startingAllocation=float,
-                 tpValue=float, plotPerformance=bool, adaptiveTradesSize=bool):
+    def __init__(self, dataset: BacktestDataset, initialUSD: int, tradesSizeUSD: int, startingAllocation: float,
+                 tpValue: float, plotPerformance: bool, adaptiveTradesSize: bool):
 
         try:
             def validPreset():
@@ -658,7 +660,7 @@ class BacktestBot:
         self.botPNL = None
         self.botEfficency = None
 
-    def resetBotAndChangeDataset(self, newDataset=BacktestDataset):
+    def resetBotAndChangeDataset(self, newDataset: BacktestDataset):
         self.dataset = newDataset
         self.resetBot()
 
@@ -682,7 +684,7 @@ class BacktestBot:
         self.tradesSizeUSD = std_2rounding(
             (self.positionUSD + (self.positionCOIN * currentPrice)) * self.tradeSizeRatio)
 
-    def openLong(self, time=int, price=float):
+    def openLong(self, time: int, price: float):
         if self.positionUSD >= self.tradesSizeUSD:
             newTrade = BacktestTrade(time, True, price, self.tradesSizeUSD / price)
             self.trades.append(newTrade)
@@ -694,7 +696,7 @@ class BacktestBot:
             self.failedOnOpen += 1
             return False
 
-    def openShort(self, time=int, price=float):
+    def openShort(self, time: int, price: float):
         if self.positionCOIN >= self.tradesSizeCOIN:
             newTrade = BacktestTrade(time, False, price, self.tradesSizeUSD / price)
             if self.positionCOIN >= newTrade.qty:
@@ -710,26 +712,26 @@ class BacktestBot:
             self.failedOnOpen += 1
             return False
 
-    def canCloseLong(self, trade=BacktestTrade):
+    def canCloseLong(self, trade: BacktestTrade):
         if self.positionCOIN > trade.qty:
             return True
         else:
             self.failedTP += 1
             return False
 
-    def canCloseShort(self, trade=BacktestTrade):
+    def canCloseShort(self, trade: BacktestTrade):
         if self.positionUSD > trade.qtyUSD:
             return True
         else:
             self.failedTP += 1
             return False
 
-    def closeLong(self, trade=BacktestTrade):
+    def closeLong(self, trade: BacktestTrade):
         self.positionUSD += trade.pnlUSD + trade.qtyUSD
         self.positionCOIN -= trade.qty
         self.checkNegativeBalance(trade)
 
-    def closeShort(self, trade=BacktestTrade):
+    def closeShort(self, trade: BacktestTrade):
         self.positionUSD -= trade.qtyUSD
         self.positionCOIN += trade.pnlQTY + trade.qty
         self.checkNegativeBalance(trade)
@@ -781,7 +783,7 @@ class BacktestBot:
             for trade in self.trades:
                 if not trade.isClosed():
                     pnl = trade.getPNL(currentPrice)
-                    if pnl > 0 and pnl < self.tpValue:  #best case
+                    if 0 < pnl < self.tpValue:  # best case
                         closable.append(trade)
                         pnls.append(pnl)
             bestPnl = max(pnls)
@@ -790,7 +792,7 @@ class BacktestBot:
                 for trade in self.trades:
                     if not trade.isClosed():
                         pnl = trade.getPNL(currentPrice)
-                        if pnl >= -self.tpValue and pnl <= 0:  #bad case
+                        if -self.tpValue <= pnl <= 0:  # bad case
                             closable.append(trade)
                             pnls.append(pnl)
                 bestPnl = max(pnls)
@@ -798,7 +800,7 @@ class BacktestBot:
                 for trade in self.trades:
                     if not trade.isClosed():
                         closable.append(trade)
-                        pnls.append(trade.getPNL(currentPrice))  #worst case
+                        pnls.append(trade.getPNL(currentPrice))  # worst case
                 bestPnl = max(pnls)
 
         finally:
@@ -829,7 +831,7 @@ class BacktestBot:
                                      self.dataset.candles[len(self.dataset.candles) - 1].timestamp)
                     self.closeShort(trade)
 
-    #STRATEGIES
+    # STRATEGIES
     def applySimpleTrendScoreStrategy(self, activationScore, maxOpen, closingAge):
         if len(self.trades) == 0:
             bullBias = self.dataset.getTrendBias()[0].get(activationScore)
@@ -890,7 +892,7 @@ class BacktestBot:
     def applyRenkoStrategy(self):
         pass
 
-    #RESULTS
+    # RESULTS
     def setFinalOutputs(self):
         self.finalUSD = self.positionUSD + (
                     self.positionCOIN * self.dataset.candles[len(self.dataset.candles) - 1].close)
@@ -946,7 +948,9 @@ class BacktestBot:
                                + f"Simple strategy tuple: [long/short trade activation score: {self.strategy[0]}, max trades open at the same time: {self.strategy[1]}, max time open for each position: {self.strategy[2]} candles]\n"
                 }
             except ValueError:
-                pass
+                str = {
+                    "content": "Error generating bot final logs"
+                }
             return str.get("content")
         else:
             return "This strategy has 0 trades attached\n"
@@ -954,9 +958,9 @@ class BacktestBot:
 
 class BacktestLeveragedBot(BacktestBot):
 
-    def __init__(self, dataset=BacktestDataset, initialUSD=int, tradesSizeUSD=int, startingAllocation=float,
-                 tpValue=float, plotPerformance=bool,
-                 adaptiveTradesSize=bool, leverage=float, adaptiveLeverage=bool):
+    def __init__(self, dataset: BacktestDataset, initialUSD: int, tradesSizeUSD: int, startingAllocation: float,
+                 tpValue: float, plotPerformance: bool,
+                 adaptiveTradesSize: bool, leverage: float, adaptiveLeverage: bool):
         self.leverage = leverage
         if adaptiveLeverage:
             self.riskFactor = std_2rounding((initialUSD / leverage) / initialUSD)
@@ -970,7 +974,7 @@ class BacktestStrategyOptimizer:
     minOpen = 10
     minAge = 10
 
-    def __init__(self, loadedDataset=BackTestLoader):
+    def __init__(self, loadedDataset: BackTestLoader):
         self.loadedDataset = loadedDataset
         self.bots: List[str] = []
         self.botsPNLs: List[float] = []
@@ -1089,7 +1093,7 @@ class BacktestStrategyOptimizer:
 
 class BacktestGraph():
 
-    def __init__(self, runnedBacktest=BackTestRunner):
+    def __init__(self, runnedBacktest: BackTestRunner):
         self.backtestID = runnedBacktest.loggingID
         self.dataset = runnedBacktest.dataset
         self.performanceData = runnedBacktest.bot.plotSrc
@@ -1139,8 +1143,8 @@ class BacktestGraph():
             self.candlePlot.show()
 
     def showPriceDataWithHeikenAshi(self):
-        #self.heikenPlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedCloses(False), name = "normal candle closing price",
-        #line = { "color" : "orange"}), secondary_y = False)
+        # self.heikenPlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedCloses(False), name = "normal candle closing price",
+        # line = { "color" : "orange"}), secondary_y = False)
         self.heikenPlot.update_layout(title=self.dataset.market + " simple candle graph", yaxis_title="Price ($)")
         self.heikenPlot.update_yaxes(type="log")
         self.heikenPlot.show()

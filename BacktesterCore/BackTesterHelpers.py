@@ -1,8 +1,13 @@
-import logging, numpy, datetime, os, pickle, jsonpickle
+import datetime
+import jsonpickle
+import logging
+import numpy
+import os
+import pickle
 
 # logger/directory handler
 WORKSPACE_BASE_DIR = os.path.dirname(__file__)
-DATA_GROUPER_DIR = WORKSPACE_BASE_DIR # +"yearlyDataGrouper\\"
+DATA_GROUPER_DIR = WORKSPACE_BASE_DIR  # +"yearlyDataGrouper\\"
 
 
 def loggingToFile(filepath):
@@ -22,8 +27,8 @@ def candlesDataFilepath(timeframe, market, year):
     return f"{WORKSPACE_BASE_DIR}{timeframe}\\{market}\\{year}.csv"
 
 
-def createYearlyData(fileNameSrc, year):
-    if fileNameSrc != None and year >= 2010:
+def createYearlyData(fileNameSrc: str, year: int):
+    if fileNameSrc is not None and year >= 2010:
         if fileNameSrc.find('-01') != -1:
             fileNameSrc = DATA_GROUPER_DIR + fileNameSrc
             fileNameDst = DATA_GROUPER_DIR + f"{year}.csv"
@@ -35,17 +40,17 @@ def createYearlyData(fileNameSrc, year):
                         with open(nextSrc, 'r') as src:
                             for line in src:
                                 dst.write(line)
-                            nextSrc = nextSrc.replace(f"-0{x}",f"-0{x+1}")
+                            nextSrc = nextSrc.replace(f"-0{x}", f"-0{x+1}")
                     elif x == 9: 
                         with open(nextSrc, 'r') as src:
                             for line in src:
                                 dst.write(line)
-                            nextSrc = nextSrc.replace(f"-0{x}",f"-{x+1}")
+                            nextSrc = nextSrc.replace(f"-0{x}", f"-{x+1}")
                     else:
                         with open(nextSrc, 'r') as src:
                             for line in src:
                                 dst.write(line)
-                            nextSrc = nextSrc.replace(f"-{x}",f"-{x+1}")
+                            nextSrc = nextSrc.replace(f"-{x}", f"-{x+1}")
 
                 with open(nextSrc, 'r') as src:
                     for line in src:
@@ -55,13 +60,13 @@ def createYearlyData(fileNameSrc, year):
             for x in range(1, 13):
                 if x < 9:
                     os.remove(toDump)
-                    toDump = toDump.replace(f"-0{x}",f"-0{x+1}")
+                    toDump = toDump.replace(f"-0{x}", f"-0{x+1}")
                 elif x == 9:
                     os.remove(toDump)
-                    toDump = toDump.replace(f"-0{x}",f"-{x+1}")
+                    toDump = toDump.replace(f"-0{x}", f"-{x+1}")
                 else:
                     os.remove(toDump)
-                    toDump = toDump.replace(f"-{x}",f"-{x+1}")
+                    toDump = toDump.replace(f"-{x}", f"-{x+1}")
 
         else: raise FileNotFoundError(f"file source error!{fileNameSrc}")
     else: raise AttributeError("Input correct source and year!")
