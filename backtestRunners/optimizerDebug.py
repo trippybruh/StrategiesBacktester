@@ -7,7 +7,7 @@ if __name__ == "__main__":
     if x == 0: 
         optimizer = BT.BacktestStrategyOptimizer(BTH.getRawDatasetFromFileForOptimization(BTH.dailyDatasetNameFormat("BTCUSDT", 2020, 2021)))
         optimizer.randomizeSimpleStrategyParams(21, 15, 18, 15)
-        print(optimizer.__str__()) #create logger 
+        print(optimizer.__str__()) # create logger
 
     if x == 1:
         loader = BT.BackTestLoader()

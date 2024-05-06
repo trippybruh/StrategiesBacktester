@@ -1,24 +1,28 @@
 import logging, numpy, datetime, os, pickle, jsonpickle
 
-#logger/directory handler
-WORKSPACE_BASE_DIR = f"C:\\Users\\TRIPPYBRUH\\Desktop\\stuff\\BinanceAPIproject\\MOONSHOTTER\\"
-DATA_GROUPER_DIR = WORKSPACE_BASE_DIR+"yearlyDataGrouper\\"
+# logger/directory handler
+WORKSPACE_BASE_DIR = os.path.dirname(__file__)
+DATA_GROUPER_DIR = WORKSPACE_BASE_DIR # +"yearlyDataGrouper\\"
+
 
 def loggingToFile(filepath):
     logging.basicConfig(filename=filepath, filemode="a", level=logging.INFO, format=f"Log file created on {datetime.datetime.now()}"+"\n%(message)s")
+
 
 def loggingFileFormat(timeframe, market, strategy, timestamp):
     basedir = WORKSPACE_BASE_DIR + timeframe + f"\\{market}\\backtests\\"
     return f"{basedir}{strategy}\\{timestamp}.txt"
 
+
 def logData(data):
     logging.info(data.__str__())
 
+
 def candlesDataFilepath(timeframe, market, year):
-    #can be generalized with base filepath
     return f"{WORKSPACE_BASE_DIR}{timeframe}\\{market}\\{year}.csv"
 
-def createYearlyData(fileNameSrc = str, year = int):
+
+def createYearlyData(fileNameSrc, year):
     if fileNameSrc != None and year >= 2010:
         if fileNameSrc.find('-01') != -1:
             fileNameSrc = DATA_GROUPER_DIR + fileNameSrc
@@ -62,33 +66,41 @@ def createYearlyData(fileNameSrc = str, year = int):
         else: raise FileNotFoundError(f"file source error!{fileNameSrc}")
     else: raise AttributeError("Input correct source and year!")
 
-#numeric
+
+# numeric
 def std_2rounding(value):
     return numpy.round(value, 2)
+
 
 def std_4rounding(value):
     return numpy.round(value, 4)
 
+
 def std_8rounding(value):
     return numpy.round(value, 8)
+
 
 def timestampToDate(timestamp):
     return datetime.datetime.fromtimestamp(int(timestamp/1000))
 
-#backtest default inputs
-DEFAULT_INITAL = 5000
+# backtest default inputs
+
+
+DEFAULT_INITIAL = 5000
 DEFAULT_TRADES_SIZE_RATIO = 0.0166666
-DEFAULT_TRADES_SIZE = std_2rounding(DEFAULT_INITAL*DEFAULT_TRADES_SIZE_RATIO)
+DEFAULT_TRADES_SIZE = std_2rounding(DEFAULT_INITIAL*DEFAULT_TRADES_SIZE_RATIO)
 ALLOCATION_50_50 = 0.5
 MINIMAL_TP = 1
-FEES_VALUE = 0.001 #% factor
+FEES_VALUE = 0.001 # % factor
 
-#readyDatasets
+# readyDatasets
 DAILY_DATASETS_DIR = WORKSPACE_BASE_DIR + "1D\\defaultDatasets\\"
 HOURLY_DATASETS_DIR = WORKSPACE_BASE_DIR + "1h\\defaultDatasets\\"
 
+
 def dailyDatasetNameFormat(market, startingYear, endingYear):
     return DAILY_DATASETS_DIR + f"{market}_{startingYear}_{endingYear}"
+
 
 def saveDatasetToFile(loadedDataset):
     if loadedDataset.ready:
@@ -97,17 +109,19 @@ def saveDatasetToFile(loadedDataset):
             pickle.dump(loadedDataset, file)
             file.close()
     else: raise AttributeError("Cannot save unloaded dataset!")
-        
-def getRawDatasetFromFileForOptimization(filePath = str):
+
+
+def getRawDatasetFromFileForOptimization(filePath):
     with open(filePath, 'rb') as file:
         dataset = pickle.load(file)
         file.close()
     return dataset
 
-def getRawDatasetFromFileForRunner(filePath = str):
+
+def getRawDatasetFromFileForRunner(filePath):
     return getRawDatasetFromFileForOptimization(filePath).dataset
 
 
-def getJsonDatasetFromFile(filePath = str):
+def getJsonDatasetFromFile(filePath):
     return jsonpickle.decode(getRawDatasetFromFileForOptimization(filePath))
 
