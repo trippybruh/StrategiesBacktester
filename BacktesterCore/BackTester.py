@@ -1,10 +1,11 @@
 #do this bruh U got this, anyway.. godspeed!#
 #AUTHOR: TrippyBruh#
 import talib, random, statistics, numpy
-from typing import List
+from progressbar import ProgressBar
+from typing import List, Final
 from plotly import graph_objects as go
-from plotly import express as ex
-from BacktesterCore.AlgoTradeHelpers import *
+from plotly.subplots import make_subplots
+from .BackTesterHelpers import *
 
 #BASIC 
 class BacktestCandle():
@@ -37,17 +38,17 @@ class BacktestCandle():
             return float('inf')
     
     def getHeikenAshi(self, previousCandle):
-        return BacktestCandle(previousCandle.timestamp, (previousCandle.open + previousCandle.close)/2, max(self.high, self.open, self.close), 
+        return BacktestHeikenCandle(previousCandle.timestamp, (previousCandle.open + previousCandle.close)/2, max(self.high, self.open, self.close), 
                min(self.low, self.open, self.close), (self.open + self.high + self.low + self.close)/4, isHeiken = True)
 
     def getAllIndicators(self):
-        return self.indicators.values()
+        return list(self.indicators.values())
 
     def getAllSMAs(self):
-        return self.SMAs.values()
+        return list(self.SMAs.values())
     
     def getAllEMAs(self):
-        return self.EMAs.values()
+        return list(self.EMAs.values())
 
     def addValueRSI14(self, value):
         self.indicators.update({"RSI(14)" : value})
@@ -66,6 +67,17 @@ class BacktestCandle():
             str = f"OPEN: {self.open} $ ---[HIGH: {self.high}, LOW: {self.low}]---> CLOSE: {self.close} $ = {numpy.round(self.getPercentageChange(), 4)} % ({timestampToDate(self.timestamp)})\n"
         else: str = f"OPEN: {self.open} $ ---> CLOSE: {self.close} $ = {numpy.round(self.getPercentageChange(), 4)} % ({timestampToDate(self.timestamp)})\nIndicators: {self.indicatorsNames}\nEMAS: {self.EMAs}\nSMAS: {self.SMAs}\n"
         return str
+
+class BacktestHeikenCandle(BacktestCandle):
+
+    def __init__(self, timestamp=int, open=float, high=float, low=float, close=float, **kwargs):
+        super().__init__(timestamp, open, high, low, close, **kwargs)
+
+    def strongUptrend(self):
+        return self.low >= self.open
+
+    def strongDowntrend(self):
+        return self.high <= self.open
 
 class BacktestTrade():
 
@@ -94,15 +106,16 @@ class BacktestTrade():
         else: return ((self.entryPrice/currentPrice)-1)*100
 
     def closeTrade(self, closingPrice = float, timestampExit = int):
-        self.exitPrice = closingPrice
-        self.timestampExit = timestampExit
-        self.rawPNL = self.getPNL(closingPrice)
-        if self.isBuy:
-            self.pnlUSD = (self.rawPNL/100)*self.qtyUSD
-            self.pnlQTY = self.pnlUSD/closingPrice
-        else: 
-            self.pnlQTY = (self.rawPNL/100)*self.qty
-            self.pnlUSD = self.pnlQTY*closingPrice
+        if not self.isClosed():
+            self.exitPrice = closingPrice
+            self.timestampExit = timestampExit
+            self.rawPNL = self.getPNL(closingPrice)
+            if self.isBuy:
+                self.pnlUSD = (self.rawPNL/100)*self.qtyUSD
+                self.pnlQTY = self.pnlUSD/closingPrice
+            else: 
+                self.pnlQTY = (self.rawPNL/100)*self.qty
+                self.pnlUSD = self.pnlQTY*closingPrice
 
     def __str__(self):
         if self.isBuy:
@@ -117,6 +130,45 @@ class BacktestTrade():
             return f"{side} trade - ({timestampToDate(self.timestampEntry)}) [Opened: {order1} at {self.entryPrice} $ ---({std_2rounding(self.rawPNL)} %)---> Closed: {order2} at {self.exitPrice} $] ({timestampToDate(self.timestampExit)})"
         else: return f"{side} trade - ({timestampToDate(self.timestampEntry)}) [Opened: {order1} at {self.entryPrice} $ ---> Trade still open]\n"
 
+class BacktestLeveragedTrade(BacktestTrade):
+
+    #default isolated margin
+    stdLiqFactor = 0.85
+
+    def __init__(self, timestampEntry=int, isBuy=bool, entryPrice=float, qty=float, leverage = float):
+
+        def setLiquidationPrice():
+            totalLiqDiff = entryPrice/leverage
+            if isBuy:
+                return entryPrice - (totalLiqDiff*self.stdLiqFactor)
+            else: return entryPrice + (totalLiqDiff*self.stdLiqFactor)
+
+        if leverage > 1:
+            super().__init__(timestampEntry, isBuy, entryPrice, qty)
+            self.leverage = leverage
+            self.liqPrice = setLiquidationPrice()
+        else: raise AttributeError("Levarege must be greater than 1")
+
+    def checkLiquidation(self, timestamp, currentPrice):
+
+        def liquidate():
+            self.timestampExit = timestamp
+            self.exitPrice = self.liqPrice
+            self.rawPNL = -100.0
+            self.pnlUSD = -self.qtyUSD
+            self.pnlQTY = -self.qty
+    
+        if (self.isBuy and currentPrice <= self.liqPrice) or (not self.isBuy and currentPrice >= self.liqPrice):
+            liquidate()
+            return True
+        else: return False
+    
+    def getPNL(self, currentPrice):
+        return super().getPNL(currentPrice)*self.leverage
+    
+    def __str__(self):
+        return super().__str__() + f"\nLeverage: {self.leverage}X, Liquidation price: {std_4rounding(self.liqPrice)} $"
+        
 class BacktestPortfolio():
     
     assets = ["USD", "BTC", "ETH", "ADA"]
@@ -150,8 +202,103 @@ class BacktestPortfolio():
             allocation += allocationValue
         if allocation != 1: raise AttributeError("Total allocation factors must add up to exactly 1")
 
-#LOADING AND RUNNING         
+#LOADING AND RUNNING   
+class BackTestLoader():
+
+    def __init__(self):
+        self.dataset = BacktestDataset()
+        self.startingYear = 0
+        self.endingYears = 0
+        self.ready = False
+    
+    def checkReady(self):
+        if self.dataset.checkLoadedDatesOrder():
+            self.ready = True
+        else: 
+            self.dataset.dumpLoadedCandles()
+            raise RuntimeError("Error in candles timestamps!")
+
+    def loadYearlyBacktest(self, timeframe, market, startingYear, extraYears):
+        if startingYear > 2009:
+            if extraYears >= 1:
+                for x in range(extraYears+1):
+                    self.dataset.loadCandlesFromFile(candlesDataFilepath(timeframe, market, f"{startingYear + x}"))
+            else: self.dataset.loadCandlesFromFile(candlesDataFilepath(timeframe, market, f"{startingYear}"))
+        else: raise AttributeError(f"{startingYear} is too small!")
+
+        self.startingYear = startingYear
+        self.endingYear = startingYear + extraYears
+        self.checkReady()
+    
+    def loadMonthlyBacktest(self):
+        pass
+
+class BacktestTrendStrategy():
+
+    MIN_ACT_SCORE = 10
+    MAX_ACT_SCORE = 40
+    RARE_RESET_FACTOR = 5
+    NORMAL_RESET_FACTOR = 25 
+    FREQUENT_RESET_FACTOR = 100
+
+    def __init__(self):
+        self.bullBias = {}
+        self.bearBias = {}
+        self.heikenBias = {}
+        self.bull = 0
+        self.bear = 0
+
+    def preloadTrendStrategy(self, datasetCandles = list[BacktestCandle]):
+        resetFactor = int(len(datasetCandles)/self.NORMAL_RESET_FACTOR)
+        for score in range(self.MIN_ACT_SCORE, self.MAX_ACT_SCORE+1):
+            bull = []
+            bear = []
+            self.bull = 0
+            self.bear = 0
+            lastTrendReset = 0
+            for candle in datasetCandles:
+                def updateTrendScore():
+                    change =  candle.getPercentageChange()
+                    if candle.bullish:
+                        if change > 0 and change < 1:
+                            self.bull += 1
+                        else:
+                            for refChange in range(1, 25):
+                                if change <= refChange:
+                                    break
+                                self.bull += 1
+                    else:
+                        if change <= 0 and change > -1:
+                            self.bear += 1
+                        else:
+                            for refChange in range(-1, -25):
+                                if change >= refChange:
+                                    break
+                                self.bear += 1
+
+                def resetTrendScore(resetIter):
+                    iter = datasetCandles.index(candle)
+                    if candle.indicators.get("RSI(14)") - candle.indicators.get("RSI(42)") >= 20 and iter-resetIter >= self.NORMAL_RESET_FACTOR:
+                        self.bull = int(score/2)
+                    elif candle.indicators.get("RSI(14)") - candle.indicators.get("RSI(42)") <= -20 and iter-resetIter >= self.NORMAL_RESET_FACTOR:
+                        self.bear = int(score/2)
+                    elif iter % resetFactor == 0 and iter != 0:
+                        self.bull = int(score/2)
+                        self.bear = int(score/2)
+                    return iter
+                
+                updateTrendScore()
+                lastTrendReset = resetTrendScore(lastTrendReset)
+                bull.append(self.bull)
+                bear.append(self.bear)
+                self.bullBias.update({score : bull})
+                self.bearBias.update({score : bear})
+
+    def preloadHeikenStrategy(self, heikenCandles = list[BacktestCandle]):
+        pass
+
 class BacktestDataset():
+
     timeframes = {"1m" : 60000, "5m" : 300000, "15m" : 900000, "1h" : 3600000, "6h" : 21600000, "1D" : 86400000} #milliseconds
     markets = ["BTCUSDT", "BTCBUSD", "ETHBTC", "ETHUSDT"]
 
@@ -162,31 +309,18 @@ class BacktestDataset():
         self.heikenAshiCandles = [] 
         self.renkoCandles = []
         self.additionalCandles = {}.fromkeys(self.timeframes.keys())
+        self.trendStrategy = BacktestTrendStrategy()
 
     ######################## DATA SHOW AND STATS ####################################
 
-    def getSimpleLineData(self):
-        return ex.line(x = self.getLoadedDates(self.candles), y = self.getLoadedCloses(self.candles))
+    def displayRandomCandles(self):
+        def displayFixedInterval(startingFrom = int):
+            print("Normal:\n", self.candles[startingFrom], self.candles[startingFrom+1], self.candles[startingFrom+2])
+            print("HeikenAshi:\n", self.heikenAshiCandles[startingFrom], self.heikenAshiCandles[startingFrom+1], self.heikenAshiCandles[startingFrom+2])
 
-    def getAllCandleData(self, **kwargs):
-        normalPlot = go.Figure(data = go.Candlestick(x = self.getLoadedDates(self.candles), close = self.getLoadedCloses(self.candles), open = self.getLoadedOpens(self.candles),
-                     high = self.getLoadedHighs(self.candles), low = self.getLoadedLows(self.candles)))
-        #heikenPlot = go.Figure(data = go.Candlestick(x = self.getLoadedDates(self.heikenAshiCandles), close = self.getLoadedCloses(self.heikenAshiCandles), open = self.getLoadedOpens(self.heikenAshiCandles),
-                     #high = self.getLoadedHighs(self.heikenAshiCandles), low = self.getLoadedLows(self.heikenAshiCandles)))
-        #normalPlot.add_trace(go.Scatter(x = self.getLoadedDates(self.candles), y = self.getLoadedSMA(kwargs.get('SMAperiod1')), name = f"{kwargs.get('SMAperiod1')} SMA"))
-        #normalPlot.add_trace(go.Scatter(x = self.getLoadedDates(self.candles), y = self.getLoadedSMA(kwargs.get('SMAperiod2')), name = f"{kwargs.get('SMAperiod2')} SMA"))
-        normalPlot.update_layout(title = self.market, yaxis_title = "Price ($)")
-        return normalPlot
-
-    def displayFixedInterval(self, startingFrom = int):
-        print("Normal:\n", self.candles[startingFrom], self.candles[startingFrom+1], self.candles[startingFrom+2])
-        print("HeikenAshi:\n", self.heikenAshiCandles[startingFrom], self.heikenAshiCandles[startingFrom+1], self.heikenAshiCandles[startingFrom+2])
-
-    def displayRandomCandle(self):
         try:
             sample = random.randint(0, len(self.candles)-1)
-            print(self.candles[sample])
-            print(self.heikenAshiCandles[sample])
+            displayFixedInterval(sample)
         except IndexError:
             print("No data loaded!")
 
@@ -225,33 +359,43 @@ class BacktestDataset():
 
     ######################### DATA GETTERS  #############################
 
-    def getLoadedDates(self):
+    def getLoadedDates(self, heiken):
         dates = []
-        for candle in self.candles:
+        if heiken: candleSrc = self.heikenAshiCandles
+        else: candleSrc = self.candles
+        for candle in candleSrc:
             dates.append(timestampToDate(candle.timestamp))
         return numpy.array(dates)
 
-    def getLoadedCloses(self):
+    def getLoadedCloses(self, heiken):
         closes = []
-        for candle in self.candles:
+        if heiken: candleSrc = self.heikenAshiCandles
+        else: candleSrc = self.candles
+        for candle in candleSrc:
             closes.append(candle.close)
         return numpy.array(closes)
 
-    def getLoadedOpens(self):
+    def getLoadedOpens(self, heiken):
         opens = []
-        for candle in self.candles:
+        if heiken: candleSrc = self.heikenAshiCandles
+        else: candleSrc = self.candles
+        for candle in candleSrc:
             opens.append(candle.open)
         return numpy.array(opens)
     
-    def getLoadedLows(self):
+    def getLoadedLows(self, heiken):
         lows = []
-        for candle in self.candles:
+        if heiken: candleSrc = self.heikenAshiCandles
+        else: candleSrc = self.candles
+        for candle in candleSrc:
             lows.append(candle.low)
         return numpy.array(lows)
     
-    def getLoadedHighs(self):
+    def getLoadedHighs(self, heiken):
         highs = []
-        for candle in self.candles:
+        if heiken: candleSrc = self.heikenAshiCandles
+        else: candleSrc = self.candles
+        for candle in candleSrc:
             highs.append(candle.high)
         return numpy.array(highs)
 
@@ -263,50 +407,18 @@ class BacktestDataset():
             return numpy.array(smaValues)
         else: raise AttributeError(f"SMA period {period} is unavailable")
 
-    ####################### DATA AVG/IND GENERATION ###############################
+    def getTrendBias(self):
+        return (self.trendStrategy.bullBias, self.trendStrategy.bearBias)
 
-    def addAllIndicators(self):
-
-        def addRSIs():
-            rsi14Values = talib.RSI(self.getLoadedCloses(), 14)
-            rsi42Values = talib.RSI(self.getLoadedCloses(), 42)
-            numpy.put(rsi14Values, range(0, 14), 0, mode='clip')
-            numpy.put(rsi42Values, range(0, 42), 0, mode='clip')
-            for x in range(0, len(self.candles)):
-                self.candles[x].addValueRSI14(std_4rounding(rsi14Values[x]))
-                self.candles[x].addValueRSI42(std_4rounding(rsi42Values[x]))
-        
-        addRSIs()
-        
-    def addAllMovingAverages(self):
-
-        def addSMA(period):
-            if period in BacktestCandle.SMAs_periods:
-                smaValues = talib.SMA(self.getLoadedCloses(), period)
-                for x in range(0, len(self.candles)):
-                    self.candles[x].addValueSMA(period, std_4rounding(smaValues[x]))
-
-        def addEMA(period):
-            if period in BacktestCandle.EMAs_periods:
-                emaValues = talib.EMA(self.getLoadedCloses(), period)
-                for x in range(0, len(self.candles)):
-                    self.candles[x].addValueEMA(period, std_4rounding(emaValues[x]))
-
-        try:
-            for period in BacktestCandle.SMAs_periods:
-                if period <= len(self.candles):
-                    addSMA(period)
-            for period in BacktestCandle.EMAs_periods:
-                if period <= len(self.candles):
-                    addEMA(period)
-
-        except IndexError as e:
-            print(e.with_traceback(None))
+    def getHeikenBias(self):
+        return self.trendStrategy.heikenBias
 
     ############################ DATA LOADING #####################################
 
     def dumpLoadedCandles(self):
         self.candles.clear()
+        self.heikenAshiCandles.clear()
+        self.renkoCandles.clear()
 
     def dumpAdditionalLoadedCandles(self):
         self.additionalCandles.clear()
@@ -330,12 +442,6 @@ class BacktestDataset():
                     elif self.timeframe == timeframe:
                         break
                     else: raise AttributeError("Check filepath timeframe!")
-
-        def fixTimestamp():
-            for timeframe in self.timeframes: 
-                if filepath.find(timeframe) != -1:
-                    return self.timeframes.get(timeframe)
-            raise AttributeError("Check filepath timeframe!")
                     
         def loadHeikenAshi():
             if previouslyLoaded != 0:
@@ -343,6 +449,40 @@ class BacktestDataset():
             else: rng = range(previouslyLoaded, len(self.candles)-1)
             for x in rng:
                 self.heikenAshiCandles.append(self.candles[x+1].getHeikenAshi(self.candles[x]))
+
+        def addRSIs():
+            rsi14Values = talib.RSI(self.getLoadedCloses(False), 14)
+            rsi42Values = talib.RSI(self.getLoadedCloses(False), 42)
+            numpy.put(rsi14Values, range(0, 14), 0, mode='clip')
+            numpy.put(rsi42Values, range(0, 42), 0, mode='clip')
+            for x in range(0, len(self.candles)):
+                self.candles[x].addValueRSI14(std_4rounding(rsi14Values[x]))
+                self.candles[x].addValueRSI42(std_4rounding(rsi42Values[x]))
+        
+        def addAllMovingAverages():
+
+            def addSMA(period):
+                if period in BacktestCandle.SMAs_periods:
+                    smaValues = talib.SMA(self.getLoadedCloses(False), period)
+                    for x in range(0, len(self.candles)):
+                        self.candles[x].addValueSMA(period, std_4rounding(smaValues[x]))
+
+            def addEMA(period):
+                if period in BacktestCandle.EMAs_periods:
+                    emaValues = talib.EMA(self.getLoadedCloses(False), period)
+                    for x in range(0, len(self.candles)):
+                        self.candles[x].addValueEMA(period, std_4rounding(emaValues[x]))
+
+            try:
+                for period in BacktestCandle.SMAs_periods:
+                    if period <= len(self.candles):
+                        addSMA(period)
+                for period in BacktestCandle.EMAs_periods:
+                    if period <= len(self.candles):
+                        addEMA(period)
+
+            except IndexError as e:
+                print(e.with_traceback(None))
 
         try:
             setMarketAndTimeframe()
@@ -358,8 +498,11 @@ class BacktestDataset():
                 else: 
                     candles_file.close()
                     break
-            loadHeikenAshi()
             
+            loadHeikenAshi(), addRSIs(), addAllMovingAverages()
+            self.trendStrategy.preloadTrendStrategy(self.candles)
+            self.trendStrategy.preloadHeikenStrategy(self.heikenAshiCandles)
+
         except OSError as e:
             print(e)
 
@@ -380,37 +523,11 @@ class BacktestDataset():
         if len(self.candles) != 0:
             str = { "content": f"Backtest dataset details --> Market: {self.market}, Timeframe:{self.timeframe}\n"
                     + f"Starting date: {timestampToDate(self.candles[0].timestamp)}, Ending date: {timestampToDate(self.candles[len(self.candles)-1].timestamp)}\n"
-                    + f"Additional stats --> Total candles backetested: {len(self.candles)}, max period price: {max(self.getLoadedHighs())} $, min period price: {min(self.getLoadedLows())} $\n"
+                    + f"Additional stats --> Total candles backetested: {len(self.candles)}, max period price: {max(self.getLoadedHighs(False))} $, min period price: {min(self.getLoadedLows(False))} $\n"
                     + f"{self.getDatasetStats(20)}"
             }
         else: return "No loaded candles in the dataset"
         return str.get("content")
-
-class BackTestLoader():
-
-    def __init__(self):
-        self.dataset = BacktestDataset()
-        self.ready = False
-    
-    def checkReady(self):
-        if self.dataset.checkLoadedDatesOrder():
-            self.ready = True
-        else: 
-            self.dataset.dumpLoadedCandles()
-            raise RuntimeError("Error in candles timestamps!")
-
-    def loadYearlyBacktest(self, timeframe, market, startingYear, extraYears):
-        if extraYears >= 1:
-            for x in range(extraYears):
-                self.dataset.loadCandlesFromFile(candlesDataFilepath(timeframe, market, f"{startingYear + x}"))
-        else: self.dataset.loadCandlesFromFile(candlesDataFilepath(timeframe, market, f"{startingYear}"))
-
-        self.dataset.addAllIndicators()
-        self.dataset.addAllMovingAverages()
-        self.checkReady()
-    
-    def loadMonthlyBacktest(self):
-        pass
 
 class BackTestRunner():
 
@@ -426,40 +543,38 @@ class BackTestRunner():
             self.timeframe = timeframe
             self.market = market
             self.bot = None
-            self.setNewBotParameters(**kwargs)
+            self.loggingID = 0
+            self.runnerSetup(**kwargs)
         else: raise AttributeError()
 
-    def setNewBotParameters(self, **kwargs):
-        self.bot = BacktestStrategyBot(self.dataset, kwargs.get("initialUSD"), kwargs.get("tradesSizeUSD"), kwargs.get("startingAllocation"), kwargs.get("tpValue"))
+    def runnerSetup(self, **kwargs):
+        self.bot = BacktestBot(self.dataset, kwargs.get("initialUSD"), kwargs.get("tradesSizeUSD"), kwargs.get("startingAllocation"), kwargs.get("tpValue"), 
+                   kwargs.get("plottable"), kwargs.get("adaptiveTradesSize"))
     
     def runSimpleStrategyBacktest(self, **kwargs):
         self.bot.applySimpleTrendScoreStrategy(kwargs.get("activationScore"), kwargs.get("maxOpen"), kwargs.get("closingAge"))
-
-
-    def reloadFreshRunner(self):
-        if self.bot != None:
-            self.bot = self.bot.getFreshRunner()
-        else: raise RuntimeError()
-
-    def botRawEfficency(self):
-        return self.bot.botPNL
     
-    def logToTextFile(self, strategy = str):
-        loggingToFile(loggingFilepath(self.timeframe, self.market, strategy))
-        logData(self.bot)
+    def logToTextFile(self):
+        self.loggingID = int(datetime.datetime.now().timestamp())
+        loggingToFile(loggingFileFormat(self.timeframe, self.market, self.dataset.trendStrategy.name, self.loggingID))
+        logData(self.dataset), logData(self.bot)
 
-    def logToTextFileExtended(self, strategy = str):
-        loggingToFile(loggingFilepath(self.timeframe, self.market, strategy))
+    def logToTextFileExtended(self):
+        self.loggingID = int(datetime.datetime.now().timestamp())
+        loggingToFile(loggingFileFormat(self.timeframe, self.market, self.dataset.trendStrategy.name, self.loggingID))
         logData(self.dataset), logData(self.bot)
         for trade in self.bot.trades:
             logData(trade)
         logData("\n")
+    
+    def getCurrentBotProps(self): 
+        return self.bot.getBotPropsDict()
 
-class BacktestStrategyBot():
+class BacktestBot():
 
-    def __init__(self, dataset = BacktestDataset, initialUSD = int, tradesSizeUSD = int, startingAllocation = float, tpValue = float, **kwargs):
+    plotDictKeys = ["buyNholdUSD", "runningBotUSD", "buyNholdPNL", "runningPNL", "runningEff", "bullBias", "bearBias"]
 
-        self.FEES_VALUE = 0.001 #% factor
+    def __init__(self, dataset = BacktestDataset, initialUSD = int, tradesSizeUSD = int, startingAllocation = float, tpValue = float, plotPerformance = bool, adaptiveTradesSize = bool):
 
         try:
             def validPreset():
@@ -470,29 +585,34 @@ class BacktestStrategyBot():
                 self.dataset = dataset
                 self.initialUSD = initialUSD
                 self.initialCOIN = initialUSD/dataset.candles[0].close
+                self.startingTradesSizeUSD = tradesSizeUSD
                 self.tradesSizeUSD = tradesSizeUSD
-                self.tradesSizeCOIN = tradesSizeUSD/self.dataset.candles[0].close
+                self.tradesSizeCOIN = tradesSizeUSD/dataset.candles[0].close
                 self.startingAllocation = startingAllocation
                 self.tpValue = tpValue
+                self.plottable: Final[bool] = plotPerformance
+                self.adaptiveTrades: Final[bool] = adaptiveTradesSize
 
                 #live position
                 self.positionUSD = initialUSD*startingAllocation
                 self.positionCOIN = self.initialCOIN*(1-startingAllocation)
-                self.runningValue = []
                 self.trades: List[BacktestTrade] = []
-                self.failedTrades = []
+                self.failedOnOpen = 0
                 self.failedTP = 0
                 self.failedSL = 0
+                if self.plottable:
+                    self.plotSrc = { str : list }.fromkeys(self.plotDictKeys)
+                    self.buyNholdTrade = BacktestTrade(dataset.candles[0].timestamp, True, dataset.candles[0].close, self.initialCOIN)
+                if self.adaptiveTrades:
+                    self.tradeSizeRatio = std_2rounding(self.tradesSizeUSD/self.initialUSD)
                 
                 #final outputs
+                self.strategy = None
                 self.totalFeesUSD = 0
                 self.finalUSD = 0
-                self.botPNL = None
-
-                # strategy
-                self.bullBias = 0
-                self.bearBias = 0
-                self.simpleStrat = tuple()
+                self.finalOnestUSD = 0
+                self.botPNL = 0
+                self.botEfficency = 0
                 
             else: raise AttributeError()
         except IndexError or AttributeError:
@@ -502,23 +622,35 @@ class BacktestStrategyBot():
         #live position
         self.positionUSD = self.initialUSD*self.startingAllocation
         self.positionCOIN = self.initialCOIN*(1-self.startingAllocation)
-        self.runningValue.clear()
         self.trades.clear()
-        self.failedTrades.clear()
+        self.failedOnOpen = 0
         self.failedTP = 0
         self.failedSL = 0
+        if self.plottable:
+            self.plotSrc.clear()
+            self.buyNholdTrade = BacktestTrade(self.dataset.candles[0].timestamp, True, self.dataset.candles[0].close, self.initialCOIN)
+        if self.adaptiveTrades:
+            self.tradesSizeUSD = self.startingTradesSizeUSD
+
         #final outputs
         self.totalFeesUSD = 0
         self.finalUSD = 0
+        self.finalOnestUSD = 0
         self.botPNL = None
-        # strategy
-        self.bullBias = 0
-        self.bearBias = 0
-        self.simpleStrat = tuple()
-
-    def getFreshRunner(self):
-        return BacktestStrategyBot(self.dataset, self.initialUSD, self.tradesSizeUSD, self.startingAllocation, self.tpValue)
+        self.botEfficency = None
     
+    def resetBotAndChangeDataset(self, newDataset = BacktestDataset):
+        self.dataset = newDataset
+        self.resetBot()
+
+    def getProfitableTrades(self):
+        profitable = 0
+        for trade in self.trades:
+            if trade.isClosed():
+                if trade.rawPNL > 0:
+                    profitable += 1
+        return profitable
+
     def currentTradesOpen(self):
         open = 0
         for trade in self.trades:
@@ -526,23 +658,37 @@ class BacktestStrategyBot():
                 open += 1
         return open
 
+    #AUTOTRADER
+    def updateTradesSize(self, currentPrice):
+        self.tradesSizeUSD = std_2rounding((self.positionUSD + (self.positionCOIN*currentPrice))*self.tradeSizeRatio)
+
     def openLong(self, time = int, price = float):
-        newTrade = BacktestTrade(time, True, price, self.tradesSizeUSD/price)
         if self.positionUSD >= self.tradesSizeUSD:
+            newTrade = BacktestTrade(time, True, price, self.tradesSizeUSD/price)
             self.trades.append(newTrade)
             self.positionUSD -= newTrade.qtyUSD
             self.positionCOIN += newTrade.qty
             self.checkNegativeBalance(newTrade)
-        else: self.failedTrades.append(newTrade)
+            return True
+        else: 
+            self.failedOnOpen += 1
+            return False
 
     def openShort(self, time = int, price = float):
-        newTrade = BacktestTrade(time, False, price, self.tradesSizeUSD/price)
         if self.positionCOIN >= self.tradesSizeCOIN:
-            self.trades.append(newTrade)
-            self.positionUSD += newTrade.qtyUSD
-            self.positionCOIN -= newTrade.qty
-            self.checkNegativeBalance(newTrade)
-        else: self.failedTrades.append(newTrade)
+            newTrade = BacktestTrade(time, False, price, self.tradesSizeUSD/price)
+            if self.positionCOIN >= newTrade.qty:
+                self.trades.append(newTrade)
+                self.positionUSD += newTrade.qtyUSD
+                self.positionCOIN -= newTrade.qty
+                self.checkNegativeBalance(newTrade)
+                return True
+            else: 
+                self.failedOnOpen += 1
+                return False
+        else: 
+            self.failedOnOpen += 1
+            return False
 
     def canCloseLong(self, trade = BacktestTrade):
         if self.positionCOIN > trade.qty:
@@ -639,234 +785,342 @@ class BacktestStrategyBot():
             for trade in closable:
                 if bestPnl == trade.getPNL(currentPrice):
                     toBeClosed = trade
+                    if toBeClosed.isBuy and self.canCloseLong(toBeClosed):
+                        toBeClosed.closeTrade(currentPrice, currentTime)
+                        self.closeLong(toBeClosed)
+                        return True
+                    elif self.canCloseShort(toBeClosed):
+                        toBeClosed.closeTrade(currentPrice, currentTime)
+                        self.closeShort(toBeClosed)
+                        return True
                     break
-            if toBeClosed.isBuy and self.canCloseLong(toBeClosed):
-                toBeClosed.closeTrade(currentPrice, currentTime)
-                self.closeLong(toBeClosed)
-            elif self.canCloseShort(toBeClosed):
-                toBeClosed.closeTrade(currentPrice, currentTime)
-                self.closeShort(toBeClosed)
+            return False
         
     def closeRemainingTrades(self):
-        
-        def closingRun():
-            for trade in self.trades:
-                if not trade.isClosed():            
-                    if trade.isBuy and self.canCloseLong(trade):
-                        trade.closeTrade(self.dataset.candles[len(self.dataset.candles)-1].close, self.dataset.candles[len(self.dataset.candles)-1].timestamp)
-                        self.closeLong(trade)
-                    elif self.canCloseShort(trade): 
-                        trade.closeTrade(self.dataset.candles[len(self.dataset.candles)-1].close, self.dataset.candles[len(self.dataset.candles)-1].timestamp)
-                        self.closeShort(trade)
-        
         for trade in self.trades:
-            if not trade.isClosed():
-                closingRun()
+            if not trade.isClosed():            
+                if trade.isBuy and self.canCloseLong(trade):
+                    trade.closeTrade(self.dataset.candles[len(self.dataset.candles)-1].close, self.dataset.candles[len(self.dataset.candles)-1].timestamp)
+                    self.closeLong(trade)
+                elif self.canCloseShort(trade): 
+                    trade.closeTrade(self.dataset.candles[len(self.dataset.candles)-1].close, self.dataset.candles[len(self.dataset.candles)-1].timestamp)
+                    self.closeShort(trade)
 
+    #STRATEGIES
     def applySimpleTrendScoreStrategy(self, activationScore, maxOpen, closingAge):
         if len(self.trades) == 0:
-            permBull = []
-            permBear = []
+            bullBias = self.dataset.getTrendBias()[0].get(activationScore)
+            bearBias = self.dataset.getTrendBias()[1].get(activationScore)
+            if self.plottable:
+                self.plotSrc.update({"bullBias" : bullBias, "bearBias" : bearBias})
+                bNhUSD = []
+                bNhPNLS = []
+                totalUSD = [] 
+                pnls = []
+                efficencies = []
 
             for candle in self.dataset.candles:
                 currentPrice = candle.close
                 currentTime = candle.timestamp
-                change = candle.getPercentageChange()
+                bullValue = bullBias[self.dataset.candles.index(candle)]
+                bearValue = bearBias[self.dataset.candles.index(candle)]
                 
-                def updateTrendScore():
-                    if candle.bullish:
-                        if change > 0 and change < 1:
-                            self.bullBias += 1
-                        else:
-                            for refChange in range(1, 21):
-                                if change <= refChange:
-                                    permBull.append(refChange)
-                                    break
-                                self.bullBias += 1
-                    else:
-                        if change <= 0 and change > -1:
-                            self.bearBias += 1
-                        else:
-                            for refChange in range(-1, -21):
-                                if change >= refChange:
-                                    print(refChange)
-                                    permBear.append(refChange)
-                                    break
-                                self.bearBias += 1
-                
-                def resetTrendScore():
-                    if self.bullBias > activationScore*2:
-                        self.bullBias = activationScore/2
-                    if self.bearBias > activationScore*2:
-                        self.bearBias = activationScore/2
+                def updatePlottableData():
+                    if self.plottable:
+                        currentTotal = self.positionUSD + (self.positionCOIN*currentPrice)
+                        bNhUSD.append(std_2rounding((1 + (self.buyNholdTrade.getPNL(currentPrice)/100))*self.buyNholdTrade.qtyUSD))
+                        bNhPNLS.append(std_4rounding(self.buyNholdTrade.getPNL(currentPrice)))
+                        totalUSD.append(std_2rounding(currentTotal)), pnls.append(std_4rounding(((currentTotal/self.initialUSD)-1)*100))
+                        efficencies.append(std_4rounding((((self.positionUSD + (self.positionCOIN*self.dataset.candles[0].close))/self.initialUSD)-1)*100))
+                        self.plotSrc.update({"buyNholdUSD" : bNhUSD, "buyNholdPNL" : bNhPNLS, "runningBotUSD" : totalUSD, "runningPNL" : pnls, "runningEff" : efficencies})
 
-                def tradeOpener():
+                def tradeOpenerByBias():
                     if self.currentTradesOpen() <= maxOpen:
-                        if self.bullBias > activationScore:
-                            self.openLong(currentTime, currentPrice)
-                        if self.bearBias > activationScore:
-                            self.openShort(currentTime, currentPrice)
-                    else: self.closeBestTradeUnderTP(currentPrice, currentTime)
+                        if bullValue > activationScore:
+                            return self.openLong(currentTime, currentPrice)
+                        if bearValue> activationScore:
+                            return self.openShort(currentTime, currentPrice)
+                    else: return self.closeBestTradeUnderTP(currentPrice, currentTime)
                 
-                resetTrendScore()
-                updateTrendScore()
-                tradeOpener()
+                tradeOpenerByBias()
                 self.TPRound(currentPrice, currentTime)
                 self.SLRound(currentPrice, currentTime, closingAge)
-                
-            self.closeRemainingTrades() #realy making sure
+                if self.adaptiveTrades:
+                    self.updateTradesSize(currentPrice)
+                updatePlottableData()
+
+            self.closeRemainingTrades()
+            self.strategy = (activationScore, maxOpen, closingAge)
+            self.setFinalOutputs()
 
         else: raise RuntimeError("This strategy has already been applied to the dataset!")
 
-        self.simpleStrat = (activationScore, maxOpen, closingAge)
-        self.getStrategyPNL()
-
-    def applyComplexTrendScoreStrategy(self, strategy):
-        momentumBias = 0
-        recencyBias = 0
-        priceBias = 0
-        macroBias = 0
-        trendScore = None
-        for x in len(self.dataset.candles):
-            candle = self.dataset.candles[x]
-            currentPrice = self.dataset.candles[x].close
-            for movAv in candle.getAllSMAs():
-                if movAv != 0.0:
-                    if currentPrice < movAv:
-                        distance = ((currentPrice/movAv)-1)*-1
-
-    def applyHeikenAshiStrategy(self):
+    def applyHeikenAshiStrategy(self, maxOpen, closingAge):
         pass
 
     def applyRenkoStrategy(self):
         pass
-    
-    def getProfitableTrades(self):
-        profitable = 0
-        for trade in self.trades:
-            if trade.isClosed():
-                if trade.rawPNL > 0:
-                    profitable += 1
-        return profitable
 
-    def getStrategyPNL(self):
-        self.finalUSD = self.positionUSD + (self.positionCOIN*self.dataset.candles[len(self.dataset.candles)-1].close) #to adjust sip sip sleeping
-        self.totalFeesUSD = (len(self.trades)*2*self.FEES_VALUE)*self.tradesSizeUSD
+    #RESULTS
+    def setFinalOutputs(self):
+        self.finalUSD = self.positionUSD + (self.positionCOIN*self.dataset.candles[len(self.dataset.candles)-1].close)
+        self.finalOnestUSD = self.positionUSD + (self.positionCOIN*self.dataset.candles[0].close)
+        self.totalFeesUSD = (len(self.trades)*2*FEES_VALUE)*self.tradesSizeUSD
         self.finalUSD -= self.totalFeesUSD
-        if self.finalUSD > self.initialUSD:
-            self.botPNL = ((self.initialUSD/self.finalUSD)-1)*-100
-            return ((self.initialUSD/self.finalUSD)-1)*-100
-        else:
-            self.botPNL = ((self.finalUSD/self.initialUSD)-1)*100
-            return ((self.finalUSD/self.initialUSD)-1)*100
+        self.botPNL = ((self.finalUSD/self.initialUSD)-1)*100
+        self.botEfficency = ((self.finalOnestUSD/self.initialUSD)-1)*100
+
+        def updateFinalPlottableData():
+            if self.plottable:
+                self.plotSrc.get("runningBotUSD").pop()
+                self.plotSrc.get("runningBotUSD").append(self.finalUSD)
+                self.plotSrc.get("runningPNL").pop()
+                self.plotSrc.get("runningPNL").append(self.botPNL)
+                self.plotSrc.get("runningEff").pop()
+                self.plotSrc.get("runningEff").append(self.botEfficency)
+        
+        updateFinalPlottableData()
+
+    def getBotPropsDict(self):
+        botProps = {"startUSD":self.initialUSD, 
+                    "plottable":self.plottable,
+                    "adaptiveTrades":self.adaptiveTrades,
+                    "tradeSize":self.startingTradesSizeUSD, 
+                    "allocation":self.startingAllocation, 
+                    "tp":self.tpValue,
+                    "strategy":self.strategy, 
+                    "finalUSD":self.finalUSD, 
+                    "finalNormUSD":self.finalOnestUSD, 
+                    "totalTrades":len(self.trades), 
+                    "winTrades":self.getProfitableTrades(),
+                    "logStr":self.__str__()
+                }
+        
+        if self.adaptiveTrades: 
+            botProps.update({"tradesSizeRatio":self.tradeSizeRatio})
+        if self.plottable:
+            botProps.update({"plotData":self.plotSrc})
+        
+        return botProps
 
     def __str__(self):
         if len(self.trades) > 0:
             try:                
                 str = {
                     "content" : f"Backtest results overivew (Timeframe: {self.dataset.timeframe}, Market: {self.dataset.market}):\n"
-                    + f"Starting USD equivalent: {self.initialUSD} $ --> ({std_2rounding(self.initialUSD*self.startingAllocation)} $, {std_8rounding(self.initialCOIN*(1-self.startingAllocation))} COIN)\n"
-                    + f"Final USD equivalent: {std_2rounding(self.finalUSD)} $ --> ({std_2rounding(self.positionUSD)} $, {std_8rounding(self.positionCOIN)} COIN), Strategy PNL: {std_4rounding(self.getStrategyPNL())} %\n"
-                    + f"Total trades: {len(self.trades)} of which {self.getProfitableTrades()} were profitable, Failed to open {len(self.failedTrades)} trades, Failed to close {self.failedTP+self.failedSL} times\n"
-                    + f"Trades size: {self.tradesSizeUSD} $ ({std_8rounding(self.tradesSizeCOIN)} COIN), Take profit value used: {self.tpValue} %, Total fees paid: {self.totalFeesUSD} $\n"
-                    + f"Simple strategy tuple: [long/short trade activation score: {self.simpleStrat[0]}, max trades open at the same time: {self.simpleStrat[1]}, max time open for each position: {self.simpleStrat[2]} candles]\n"
+                    + f"Starting USD equivalent: {self.initialUSD} $ --> ({std_2rounding(self.initialUSD*self.startingAllocation)} $, {std_8rounding(self.initialCOIN*(1-self.startingAllocation))} COIN), "
+                    + f"Final USD equivalent: {std_2rounding(self.finalUSD)} $ --> ({std_2rounding(self.positionUSD)} $, {std_8rounding(self.positionCOIN)} COIN) --> "
+                    + f"Normalized to starting price: {std_2rounding(self.finalOnestUSD)} $\nFinal price based PNL: {std_4rounding(self.botPNL)} %, Starting price based PNL/Efficency: {std_4rounding(self.botEfficency)} %\n"
+                    + f"Total trades: {len(self.trades)} of which {self.getProfitableTrades()} were profitable, Failed to open {self.failedOnOpen} trades, Failed to close {self.failedTP+self.failedSL} times\n"
+                    + f"Trades size: {self.startingTradesSizeUSD} $ ({std_8rounding(self.tradesSizeCOIN)} COIN), Take profit value used: {self.tpValue} %, Total fees paid: {std_2rounding(self.totalFeesUSD)} $\n"
+                    + f"Simple strategy tuple: [long/short trade activation score: {self.strategy[0]}, max trades open at the same time: {self.strategy[1]}, max time open for each position: {self.strategy[2]} candles]\n"
                 }
             except ValueError:
                 pass
             return str.get("content")
         else: return "This strategy has 0 trades attached\n"
 
-#OPTIMIZER
-class BacktestStrategyIterator():
+class BacktestLeveragedBot(BacktestBot):
 
-    initialUSDs = (0, 1200, 200)
-    tradesSizesUSD = (0, 220, 20)
-    startingAllocations = (0, 125, 25) #0 means no USD, 100 means all USD
-    tpValues = (0, 50, 10)
+    def __init__(self, dataset=BacktestDataset, initialUSD=int, tradesSizeUSD=int, startingAllocation=float, tpValue=float, plotPerformance=bool, 
+                 adaptiveTradesSize=bool, leverage=float, adaptiveLeverage = bool):
+        self.leverage = leverage
+        if adaptiveLeverage:
+            self.riskFactor = std_2rounding((initialUSD/leverage)/initialUSD)
+        super().__init__(dataset, initialUSD, tradesSizeUSD, startingAllocation, tpValue, plotPerformance, adaptiveTradesSize)
+
+#OPTIMIZER
+class BacktestStrategyOptimizer():
+
+    minScore = 10
+    minOpen = 10
+    minAge = 10
 
     def __init__(self, loadedDataset = BackTestLoader):
         self.loadedDataset = loadedDataset
         self.bots: List[str] = []
         self.botsPNLs: List[float] = []
-        self.best = None
-        self.winningBots = 0
-        self.losingBots = 0
+        self.botsEfficencies: List[float] = []
+        self.stategyParams: List[tuple] = []
+        self.bestPNL = None
+        self.bestEfficency = None
+        self.winningBots = 0 #calculated by efficency
+        self.losingBots = 0 #calculated by efficency
+        self.WLratio = 0 #calculated by efficency
         self.totalPossibleConfigs = 0
         self.validConfigs = 0
         self.invalidConfigs = 0
         self.failedConfigs = 0
 
-    def validPreset(self, initialUSD, tradesSizeUSD, startingAllocation, tpValue):
-        return initialUSD >= 10 and 0 <= startingAllocation <= 1 and tpValue > 0 and (initialUSD*startingAllocation) > tradesSizeUSD
+    def validOptimization(self):
+        return len(self.bots) == len(self.botsPNLs) == len(self.botsEfficencies) == len(self.stategyParams)
 
-    def randomizeSimpleStrategyParams(self, maxScore, maxMaxOpen, maxClosingAge): #very heavy method, range step between input parameters is 1
-        if self.loadedDataset.ready:
-            runner =  BackTestRunner(self.loadedDataset.dataset, self.loadedDataset.dataset.timeframe, self.loadedDataset.dataset.market, initialUSD = 5000,
-                                    tradesSizeUSD = 500, startingAllocation = 0.5, tpValue = 10)
-            validBots = []
-            pnls = []
-            for score in range(10, maxScore+1):
-                for open in range(10, maxMaxOpen+1):
-                    for age in range(30, maxClosingAge+1):
-                        try:
-                            self.totalPossibleConfigs += 1
-                            runner.runSimpleStrategyBacktest(activationScore = score, maxOpen = open, closingAge = age)
-                            validBots.append(runner.bot.__str__())
-                            pnls.append(runner.bot.botPNL)
-                            runner.bot.resetBot()
-                            self.validConfigs += 1
-                        except RuntimeError:
-                            self.failedConfigs += 1
-                            runner.bot.resetBot()
-                            continue
-                        except AttributeError:
-                            self.failedConfigs += 1
-                            runner.bot.resetBot()
-                            continue
-
-            self.bots.extend(validBots)
-            self.botsPNLs.extend(pnls)
-            self.validConfigs = len(self.bots)
-        else: raise AttributeError("Check the loaded dataset!")
-
-        #BESTIA NERA
-        #  for initialUSD in range(self.initialUSDs[0], self.initialUSDs[1], self.initialUSDs[2]):
-        #        for tradesSize in range(self.tradesSizesUSD[0], self.tradesSizesUSD[1], self.tradesSizesUSD[2]):
-        #            for allocation in range(self.startingAllocations[0], self.startingAllocations[1], self.startingAllocations[2]):
-        #                for tp in range(self.tpValues[0], self.tpValues[1], self.tpValues[2]):
-        #                    self.totalPossibleConfigs += 1
-        #                    if self.validPreset(initialUSD, tradesSize, std_2rounding(allocation/100), tp):
-        #                        try:
-        #                            runner.setNewBotParameters(initialUSD = initialUSD, tradesSizeUSD = tradesSize, startingAllocation = std_2rounding(allocation/100), tpValue = tp) 
-        #remember invalid configs!
-
-    def removeBotsWithNegativePNL(self):
-        totalBots = len(self.bots)
+    def setWinLoseRatio(self):
         for bot in self.bots:
-            if bot.find("Strategy PNL: -") != -1:
-                self.bots.remove(bot)
-        self.winningBots = len(self.bots)
-        self.losingBots = totalBots - self.winningBots
+            if bot.find("Strategy Efficency: -") != -1:
+                self.losingBots += 1
+        self.winningBots = len(self.bots) - self.losingBots
+        if self.losingBots != 0:
+            self.WLratio = std_2rounding(self.winningBots/self.losingBots)
+        else: self.WLratio = float('inf')
 
     def setBestBotByPNL(self):
-        bestPNL = max(self.botsPNLs)
         for bot in self.bots:
-            if bot.find(f"Strategy PNL: {std_4rounding(bestPNL)} %") != -1:
-                self.best = bot
+            if bot.find(f"Final price based PNL: {std_4rounding(max(self.botsPNLs))} %") != -1:
+                self.bestPNL = bot
                 break
+
+    def setBestBotByEfficency(self):
+        for bot in self.bots:
+            if bot.find(f"Starting price based PNL/Efficency: {std_4rounding(max(self.botsEfficencies))} %") != -1:
+                self.bestEfficency = bot
+                break
+
+    def randomizeSimpleStrategyParams(self, maxTP, maxScore, maxMaxOpen, maxClosingAge): #very heavy method, range step between input parameters is 1
+        if self.loadedDataset.ready:
+            def validRandomizationLimits():
+                return maxTP >= MINIMAL_TP and maxScore > self.minScore and maxMaxOpen > self.minOpen and maxClosingAge > self.minAge
+            
+            if  validRandomizationLimits():
+                runner =  BackTestRunner(self.loadedDataset.dataset, self.loadedDataset.dataset.timeframe, self.loadedDataset.dataset.market, initialUSD = DEFAULT_INITAL, 
+                                         tradesSizeUSD = DEFAULT_TRADES_SIZE, startingAllocation = ALLOCATION_50_50, tpValue = maxTP, plottable = False, adaptiveTradesSize = False)
+                validBots = []
+                pnls = []
+                efficencies = []
+                params = []
+
+                with ProgressBar(max_value=(maxScore-self.minScore)*(maxMaxOpen-self.minOpen)*(maxClosingAge-self.minAge)) as bar:
+                    barValue = 0
+                    barFull = False
+                    for score in range(self.minScore, maxScore+1):
+                        for open in range(self.minOpen, maxMaxOpen+1):
+                            for age in range(self.minAge, maxClosingAge+1):
+                                try:
+                                    self.totalPossibleConfigs += 1
+                                    runner.runSimpleStrategyBacktest(activationScore = score, maxOpen = open, closingAge = age)
+                                    validBots.append(runner.bot.__str__())
+                                    pnls.append(runner.bot.botPNL)
+                                    efficencies.append(runner.bot.botEfficency)
+                                    params.append(runner.bot.strategy)
+                                    runner.bot.resetBot()
+                                    self.validConfigs += 1
+                                except RuntimeError or AttributeError:
+                                    self.failedConfigs += 1
+                                    runner.bot.resetBot()
+                                finally:
+                                    try:
+                                        if not barFull:
+                                            bar.update(barValue)
+                                            barValue += 1
+                                    except ValueError:
+                                        print("\nBacktest optimization completed! Fetching results...\n")
+                                        barFull = True
+                                    continue
+                
+                self.bots.extend(validBots)
+                self.botsPNLs.extend(pnls)
+                self.botsEfficencies.extend(efficencies)
+                self.stategyParams.extend(params)
+
+                if self.validOptimization():
+                    self.validConfigs = len(self.bots)
+                    self.setWinLoseRatio()
+                    self.setBestBotByPNL()
+                    self.setBestBotByEfficency()
+                else: raise RuntimeError("Inconsistent bot data generated!")
+            else: raise AttributeError("Check input attributes")
+
+        else: raise AttributeError("Check the loaded dataset!")
 
     def __str__(self):
         if len(self.bots) != 0:
-            str = { "content" : f"{self.loadedDataset.dataset.__str__()} \n\nTotal tried configuration[{self.validConfigs}, {self.winningBots} with positive PNL and {self.losingBots} with negative PNL]"
-                   + f"\nOptimal bot configuration for this dataset:{self.best}" }
+            str = { "content" : f"{self.loadedDataset.dataset.__str__()}\n\nStrategy optimization results:\nTotal tried configuration: {self.validConfigs} out of {self.totalPossibleConfigs} possible --> "
+                   + f"({self.winningBots} with positive Efficency, {self.losingBots} with negative Efficency, {self.failedConfigs} failed to run) --> Win-Lose ratio: {self.WLratio}"
+                   + f"\n\nOptimal bot configuration by PNL:\n{self.bestPNL}\nOptimal bot configuration by Efficency:\n{self.bestEfficency}"  
+                }
             return str.get("content")
         else: return "No strategy iterated!"
             
+class BacktestGraph():
+
+    def __init__(self, runnedBacktest = BackTestRunner):
+        self.backtestID = runnedBacktest.loggingID
+        self.dataset = runnedBacktest.dataset
+        self.performanceData = runnedBacktest.bot.plotSrc
+        self.strategyData = runnedBacktest.bot.strategy
+        self.trendStrategyData = runnedBacktest.dataset.trendStrategy
+        self.xDates = self.dataset.getLoadedDates(False)
+        self.linePlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.candlePlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.heikenPlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.performancePlot = None
+        self.loaded = False
+        self.setupPriceData()
+    
+    def setupPriceData(self):
+        self.linePlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedCloses(False), name = self.dataset.market + " price"), secondary_y = False)
+        self.candlePlot.add_trace(go.Candlestick(x = self.xDates, close = self.dataset.getLoadedCloses(False), open = self.dataset.getLoadedOpens(False),
+                                high = self.dataset.getLoadedHighs(False), low = self.dataset.getLoadedLows(False), name = self.dataset.market + " price"), secondary_y = False)
+        self.heikenPlot.add_trace(go.Candlestick(x = self.dataset.getLoadedDates(True), close = self.dataset.getLoadedCloses(True), open = self.dataset.getLoadedOpens(True),
+                                high = self.dataset.getLoadedHighs(True), low = self.dataset.getLoadedLows(True), name = self.dataset.market + " price"), secondary_y = False)
+
+    def resetGraphData(self):
+        self.linePlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.candlePlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.heikenPlot = make_subplots(specs=[[{"secondary_y": True}]])
+        self.performancePlot = None
+        self.loaded = False
+        self.setupPriceData()
+
+    def showPriceDatatWithMA(self, MAperiod1 = int, MAperiod2 = int): 
+        if MAperiod1 in BacktestCandle.SMAs_periods and MAperiod2 in BacktestCandle.SMAs_periods:
+            self.candlePlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedSMA(MAperiod1), name = f"{MAperiod1} SMA", 
+                                      line = { "color" : "blue"}), secondary_y = False)
+            self.candlePlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedSMA(MAperiod2), name = f"{MAperiod2} SMA", 
+                                      line = { "color" : "gold"}), secondary_y = False)
+            self.candlePlot.update_layout(title = self.dataset.market + " simple candle graph", yaxis_title = "Price ($)")
+            self.candlePlot.update_yaxes(type = "log")
+            self.candlePlot.show()
+
+    def showPriceDataWithHeikenAshi(self):
+        #self.heikenPlot.add_trace(go.Scatter(x = self.xDates, y = self.dataset.getLoadedCloses(False), name = "normal candle closing price",
+                                  #line = { "color" : "orange"}), secondary_y = False)
+        self.heikenPlot.update_layout(title = self.dataset.market + " simple candle graph", yaxis_title = "Price ($)")
+        self.heikenPlot.update_yaxes(type = "log")
+        self.heikenPlot.show()
+
+    def showBacktest(self):
+        if self.loaded:
+            self.performancePlot.show()
+        else: raise  RuntimeError("Backtest data is not loaded on the plot!") 
+
+    def loadUSDequivalentsOnGraph(self, withCandles = bool):
+        if withCandles:
+            self.performancePlot = self.candlePlot
+        else: self.performancePlot = self.linePlot
+        self.performancePlot.add_trace(go.Scatter(x = self.xDates, y = numpy.array(self.performanceData.get("buyNholdUSD")), name = "Running buy and hold trade USD equivalent", 
+                                                line = { "color" : "orange"}), secondary_y = True)
+        self.performancePlot.add_trace(go.Scatter(x = self.xDates, y = numpy.array(self.performanceData.get("runningBotUSD")), name = "Running bot total USD equivalent", 
+                                                line = { "color" : "darkgrey"}), secondary_y = True)
+        self.performancePlot.update_layout(title = f"Perfromance of backtest on {self.dataset.market} with timestamp/ID: {self.backtestID}", yaxis_title = "Price ($)")
+        self.performancePlot.update_yaxes(type = "log", secondary_y = False)
+        self.loaded = True
+
+    def loadPerformanceOnGraph(self, withCandles = bool):
+        if withCandles:
+            self.performancePlot = self.candlePlot
+        else: self.performancePlot = self.linePlot
+        self.performancePlot.add_trace(go.Scatter(x = self.xDates, y = numpy.array(self.performanceData.get("buyNholdPNL")), name = "Running buy and hold trade PNL (%)",
+                                                line = { "color" : "orange"}), secondary_y = True)
+        self.performancePlot.add_trace(go.Scatter(x = self.xDates, y = numpy.array(self.performanceData.get("runningPNL")), name = "Running PNL (%)",
+                                                line = { "color" : "darkgrey"}), secondary_y = True)
+        self.performancePlot.add_trace(go.Scatter(x = self.xDates, y = numpy.array(self.performanceData.get("runningEff")), name = "Running Efficency (%)",
+                                                line = { "color" : "purple"}), secondary_y = True)
+        self.performancePlot.update_layout(title = f"Perfromance of backtest on {self.dataset.market} with timestamp/ID: {self.backtestID}", yaxis_title = "Price ($)")
+        self.performancePlot.update_yaxes(type = "log", secondary_y = False)
+        self.loaded = True
+
 #STRATEGIES
-class ComplexStrategy():
-    pass
-
-
 
 
 
