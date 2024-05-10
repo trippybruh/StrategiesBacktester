@@ -15,7 +15,7 @@ def loggingToFile(filepath):
 
 
 def loggingFileFormat(timeframe, market, strategy, timestamp):
-    basedir = WORKSPACE_BASE_DIR + timeframe + f"\\{market}\\backtests\\"
+    basedir = WORKSPACE_BASE_DIR + f"\\{timeframe}\\{market}\\backtests\\"
     return f"{basedir}{strategy}\\{timestamp}.txt"
 
 
@@ -24,7 +24,7 @@ def logData(data):
 
 
 def candlesDataFilepath(timeframe, market, year):
-    return f"{WORKSPACE_BASE_DIR}{timeframe}\\{market}\\{year}.csv"
+    return f"{WORKSPACE_BASE_DIR}\\{timeframe}\\{market}\\{year}.csv"
 
 
 def createYearlyData(fileNameSrc: str, year: int):
